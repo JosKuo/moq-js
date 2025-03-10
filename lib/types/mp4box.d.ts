@@ -1143,10 +1143,15 @@ declare module "mp4box" {
 		}
 
 		export class prftBox extends ContainerBox {
-			constructor(size?: number)
+            version: number
+            ref_track_id: number
+            ntp_timestamp: number
+            media_time: number
 
-			parse(stream: any): void
-		}
+            constructor(size?: number)
+
+            parse(stream: any): void
+        }
 
 		export class profBox extends ContainerBox {
 			constructor(size?: number)

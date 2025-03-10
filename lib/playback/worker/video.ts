@@ -24,11 +24,12 @@ export class Renderer {
 
 	#decoder!: VideoDecoder
 	#queue: TransformStream<Frame, VideoFrame>
-
+	#prftMap = new Map<number, number>() // PTS -> NTP
 	#decoderConfig?: DecoderConfig
 	#waitingForKeyframe: boolean = true
 	#paused: boolean
 	#hasSentWaitingForKeyFrameEvent: boolean = false
+	#serverTimeOffset: number = 0
 
 	constructor(config: Message.ConfigVideo, timeline: Component) {
 		this.#canvas = config.canvas
@@ -57,11 +58,16 @@ export class Renderer {
 
 	async #run() {
 		const reader = this.#timeline.frames.pipeThrough(this.#queue).getReader()
+
 		for (;;) {
 			const { value: frame, done } = await reader.read()
+			
 			if (this.#paused) continue
 			if (done) break
 
+			const prft = this.#prftMap.get(frame.timestamp)
+            let ntp = ntptoms(prft)
+			
 			self.requestAnimationFrame(() => {
 				this.#canvas.width = frame.displayWidth
 				this.#canvas.height = frame.displayHeight
@@ -72,6 +78,10 @@ export class Renderer {
 				ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight) // TODO respect aspect ratio
 				frame.close()
 			})
+
+			if (!isNaN(this.#serverTimeOffset)) {
+                ntp -= this.#serverTimeOffset
+            }
 		}
 	}
 
@@ -156,9 +166,31 @@ export class Renderer {
 				type: frame.sample.is_sync ? "key" : "delta",
 				data: frame.sample.data,
 				timestamp: frame.sample.dts / frame.track.timescale,
-			})
+			})			
 
+			for (const prft of frame.prfts) {
+				this.#prftMap.set(chunk.timestamp, prft.ntp_timestamp)
+			} 
+	
 			this.#decoder.decode(chunk)
 		}
 	}
+}
+
+function ntptoms(ntpTimestamp?: number) {
+	//J: the ntpTimestamp is undefined
+    if (!ntpTimestamp) return NaN
+
+    const ntpEpochOffset = 2208988800000 // milliseconds between 1970 and 1900
+
+    // Split the 64-bit NTP timestamp into upper and lower 32-bit parts
+    const upperPart = Math.floor(ntpTimestamp / Math.pow(2, 32))
+    const lowerPart = ntpTimestamp % Math.pow(2, 32)
+
+    // Calculate milliseconds for upper and lower parts
+    const upperMilliseconds = upperPart * 1000
+    const lowerMilliseconds = (lowerPart / Math.pow(2, 32)) * 1000
+
+    // Combine both parts and adjust for the NTP epoch offset
+    return upperMilliseconds + lowerMilliseconds - ntpEpochOffset
 }
