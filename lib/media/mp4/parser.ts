@@ -84,7 +84,7 @@ export class Parser {
             const box = this.#mp4.boxes[length - i]
 
             if (box.type === "prft"){
-				console.log(box.ntp_timestamp) //ntp_timestamp looks kinda... werid? 16967728369015919000, ... REPEAT MULITPLE TIMES ... , n16967728496481958000
+				console.log(ntptoms(box.ntp_timestamp)) //ntp_timestamp looks kinda... werid? 16967728369015919000, ... REPEAT MULITPLE TIMES ... , n16967728496481958000
 
 				prfts.push(box)
 			} 
@@ -92,4 +92,22 @@ export class Parser {
 		
         return prfts
     }
+	
+}
+function ntptoms(ntpTimestamp?: number) {
+    if (!ntpTimestamp) return NaN
+
+    const ntpEpochOffset = 2208988800000 // milliseconds between 1970 and 1900
+
+    // Split the 64-bit NTP timestamp into upper and lower 32-bit parts
+    const upperPart = Math.floor(ntpTimestamp / Math.pow(2, 32))
+    const lowerPart = ntpTimestamp % Math.pow(2, 32)
+
+    // Calculate milliseconds for upper and lower parts
+    const upperMilliseconds = upperPart * 1000
+    const lowerMilliseconds = (lowerPart / Math.pow(2, 32)) * 1000
+	const unixTimestamp = upperMilliseconds + lowerMilliseconds - ntpEpochOffset
+
+    // Combine both parts and adjust for the NTP epoch offset
+    return unixTimestamp
 }
