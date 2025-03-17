@@ -57,33 +57,60 @@ export class Renderer {
 	}
 
 	async #run() {
-		const reader = this.#timeline.frames.pipeThrough(this.#queue).getReader()
-
+		const reader = this.#timeline.frames.pipeThrough(this.#queue).getReader();
+		let lastValidNtp: number | undefined = undefined; // Store the last valid NTP timestamp
 		for (;;) {
-			const { value: frame, done } = await reader.read()
-			
-			if (this.#paused) continue
-			if (done) break
+			const { value: frame, done } = await reader.read();
+	
+			if (this.#paused) continue;
+			if (done) break;
+	
+			// Extract PRFT timestamp for this frame
+			const prft = this.#prftMap.get(frame.timestamp);
+			let ntp: number | undefined = prft ? ntptoms(prft) : lastValidNtp; 
+			let currTime = ntptoms(Date.now())
 
-			const prft = this.#prftMap.get(frame.timestamp)
-            let ntp = ntptoms(prft)
-			
+			// Adjust for server time offset
+			if (ntp !== undefined && !isNaN(ntp) && !isNaN(this.#serverTimeOffset)) {
+				ntp -= this.#serverTimeOffset;
+			}
+	
+			// Store the last valid NTP timestamp (only update if it's valid)
+			if (ntp !== undefined && !isNaN(ntp)) {
+				lastValidNtp = ntp;
+			}
+
+		
+	
 			self.requestAnimationFrame(() => {
-				this.#canvas.width = frame.displayWidth
-				this.#canvas.height = frame.displayHeight
+				this.#canvas.width = frame.displayWidth;
+				this.#canvas.height = frame.displayHeight;
+	
+				const ctx = this.#canvas.getContext("2d");
+				if (!ctx) throw new Error("failed to get canvas context");
+				
+				ctx.fillStyle = "white"; 
+				ctx.fillRect(0, 0, this.#canvas.width, this.#canvas.height);
 
-				const ctx = this.#canvas.getContext("2d")
-				if (!ctx) throw new Error("failed to get canvas context")
+				ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+				
+				// Display the last valid NTP timestamp
+				if (lastValidNtp !== undefined) {
+					ctx.font = "24px Arial";
+					ctx.fillStyle = "white";
+					const networkLatency = (performance.now() + performance.timeOrigin - lastValidNtp) / 1000; // Latency in seconds
 
-				ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight) // TODO respect aspect ratio
-				frame.close()
-			})
-
-			if (!isNaN(this.#serverTimeOffset)) {
-                ntp -= this.#serverTimeOffset
-            }
+					ctx.fillText(`Latency: ${networkLatency}`, 20, 40);
+				}
+	
+				frame.close();
+			});
 		}
 	}
+	
+	
+	
+	
 
 	#start(controller: TransformStreamDefaultController<VideoFrame>) {
 		this.#decoder = new VideoDecoder({
@@ -177,8 +204,8 @@ export class Renderer {
 	}
 }
 
+
 function ntptoms(ntpTimestamp?: number) {
-	//J: the ntpTimestamp is undefined
     if (!ntpTimestamp) return NaN
 
     const ntpEpochOffset = 2208988800000 // milliseconds between 1970 and 1900

@@ -4,6 +4,8 @@ export interface Frame {
 	track: MP4.Track // The track this frame belongs to
 	sample: MP4.Sample // The actual sample contain the frame data
 	prfts: MP4.BoxParser.prftBox[] // Recent prft boxes
+	ntpTime?: number; // Store computed NTP timestamp
+
 }
 
 // Decode a MP4 container into individual samples.
@@ -12,6 +14,7 @@ export class Parser {
 	#mp4 = MP4.New() //Creates a new MP4 parser instance
 	#offset = 0
 	#last_boxes_length = 0
+	#ntpTimestamps: Array<{ mediaTime: number; ntpTime: number }> = []; // Store extracted NTP timestamps
 
 	#samples: Array<Frame> = [] // Stores extracted frames
 
@@ -27,12 +30,24 @@ export class Parser {
 				this.#mp4.setExtractionOptions(track.id, track, { nbSamples: 1 })
 			}
 		}
-
 		this.#mp4.onSamples = (_track_id: number, track: MP4.Track, samples: MP4.Sample[]) => {
 			for (const sample of samples) {
-				this.#samples.push({ track, sample , prfts: this.#getLastPRFTs() as MP4.BoxParser.prftBox[]})
+				const prfts = this.#getLastPRFTs();
+				let ntpTime: number | undefined = prfts.length > 0 ? prfts[0].ntp_time : undefined;
+		
+				// Store sample and associated PRFT data
+				this.#samples.push({ track, sample, prfts, ntpTime });
+		
+				// Update global ntpTimestamps array for real-time overlay
+				if (ntpTime !== undefined) {
+					this.#ntpTimestamps.push({
+						mediaTime: sample.cts / track.timescale, // Convert to media time
+						ntpTime: ntpTime
+					});
+				}
 			}
-		}
+		};
+		
 
 
 		this.#mp4.start()
@@ -50,6 +65,10 @@ export class Parser {
 			throw new Error("could not parse MP4 info")
 		}
 	}
+
+	getNtpTimestamps() {
+        return this.#ntpTimestamps;
+    }
 
 	decode(chunk: Uint8Array): Array<Frame> {
 		const copy = new Uint8Array(chunk)
@@ -84,9 +103,10 @@ export class Parser {
             const box = this.#mp4.boxes[length - i]
 
             if (box.type === "prft"){
-				console.log(ntptoms(box.ntp_timestamp)) //ntp_timestamp looks kinda... werid? 16967728369015919000, ... REPEAT MULITPLE TIMES ... , n16967728496481958000
+				
+				const npt_time = ntptoms(box.ntp_timestamp)
 
-				prfts.push(box)
+				prfts.push({...box, ntp_time: npt_time})
 			} 
         }
 		
