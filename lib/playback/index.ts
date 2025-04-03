@@ -42,7 +42,7 @@ export default class Player extends EventTarget {
     #probeSize: number = 40000
     #probePriority: number = 0 // 0 is lowest priority, 1 is highest
     #probeTimer: number = 0
-    #useProbeTestData = false
+    #useProbeTestData = true
     #probeTestResults: any[] = []
     #probeTestData = {
         start: 10000,
