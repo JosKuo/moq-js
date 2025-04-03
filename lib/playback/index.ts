@@ -36,6 +36,24 @@ export default class Player extends EventTarget {
 	#paused: boolean
 	#liveStartTime: number = Date.now()
 
+	//Probing settings
+	#useProbing: boolean = false
+    #probeInterval: number = 2000
+    #probeSize: number = 40000
+    #probePriority: number = 0 // 0 is lowest priority, 1 is highest
+    #probeTimer: number = 0
+    #useProbeTestData = false
+    #probeTestResults: any[] = []
+    #probeTestData = {
+        start: 10000,
+        stop: 300000,
+        increment: 10000,
+        iteration: 3,
+        lastIteration: 0
+    }
+
+	#enableSwitchTrackIdFeature = this.getFromQueryString("enableSwitchTrackIdFeature", "false") === "true"
+
 	// Running is a promise that resolves when the player is closed.
 	// #close is called with no error, while #abort is called with an error.
 	#running: Promise<void>
@@ -69,7 +87,11 @@ export default class Player extends EventTarget {
 			console.error("Error in #run():", err)
 			super.dispatchEvent(new CustomEvent("error", { detail: err }))
 			this.#abort(err)
+			
 		})
+
+		this.parseProbeParametersAndRun()
+
 	}
 
 	static async create(config: PlayerConfig, tracknum: number): Promise<Player> {
@@ -128,10 +150,153 @@ export default class Player extends EventTarget {
 		}
 	}
 
+	//PROBE THINGS
+	
+	getFromQueryString(key: string, defaultValue: string = ""): string {
+        const re = new RegExp("[?&]" + key + "=([^&]+)")
+        const m = re.exec(location.search)
+        console.log("playback | getFromQueryString", re, m)
+        if (m && m[1]) {
+            return m[1]
+        }
+        return defaultValue
+    }
+
+	parseProbeParametersAndRun() {
+        try {
+            if (!location.search) return
+
+            const probeSize = parseInt(this.getFromQueryString("probeSize", "0"))
+            const probePriority = parseInt(this.getFromQueryString("probePriority", "-1"))
+            const probeInterval = parseInt(this.getFromQueryString("probeInterval", "0"))
+
+            let useProbing = false
+            if (probeSize > 0) {
+                useProbing = true
+                this.#probeSize = probeSize
+            }
+            if (probePriority > -1) {
+                useProbing = true
+                this.#probePriority = probePriority
+            }
+            // set probeInterval and start probeTimer
+            if (probeInterval > 0 && probeInterval !== this.#probeInterval) {
+                useProbing = true
+                if (this.#probeTimer) {
+                    clearInterval(this.#probeTimer)
+                }
+                this.#probeInterval = probeInterval
+                this.#probeTimer = setInterval(this.runProbe, this.#probeInterval)
+            }
+
+            if (useProbing) {
+                this.#useProbing = true
+                console.log("playback | parseProbeParameters | probeSize: %d probePriority: %d probeInterval: %d", this.#probeSize, this.#probePriority, this.#probeInterval)
+            }
+        } catch (e) {
+            console.error("playback | parseProbeParameters | error", e)
+        }
+    }
+
+	downloadProbeStats = () => {
+        const link = document.createElement("a")
+        document.body.appendChild(link)
+
+        // download logs
+        if (this.#probeTestResults.length > 0) {
+            const headers = ["duration", "size", "bandwidth"]
+            const csvContent = "data:application/vnd.ms-excel;charset=utf-8," + headers.join("\t") + "\n" + this.#probeTestResults.map((e) => Object.values(e).join("\t")).join("\n")
+            const encodedUri = encodeURI(csvContent)
+            link.setAttribute("href", encodedUri)
+            link.setAttribute("download", "logs_" + Date.now() + ".xls")
+            link.click()
+        } else {
+            console.warn("playback | downloadProbeStats | no logs")
+        }
+
+        link.remove()
+    }
+	
+	runProbe = async () => { //?probeSize=40000&probePriority=0&probeInterval=3000
+		console.log("playback | runProbe")
+	
+		let totalIteration = 0
+		if (this.#useProbeTestData && this.#probeTestData) {
+			const totalProbeSizes = (this.#probeTestData.stop - this.#probeTestData.start) / this.#probeTestData.increment + 1
+			totalIteration = totalProbeSizes * this.#probeTestData.iteration
+			console.log("playback | probe | totalIteration", totalIteration)
+			this.#probeSize = this.#probeTestData.start + Math.floor(this.#probeTestData.lastIteration / this.#probeTestData.iteration) * this.#probeTestData.increment
+			++this.#probeTestData.lastIteration
+		}
+	
+		let sub: any
+		try {
+
+			const start = performance.now()
+			const probeTrackName = ".probe:" + this.#probeSize + ":" + this.#probePriority
+			sub = await this.#connection.subscribe(["bbb"], probeTrackName)
+	
+			console.log("playback | probe sub", sub, probeTrackName)
+			
+			const result = await Promise.race([
+				sub.data(),
+				new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for probe data")), 3000))
+			])
+			console.log("probe | result", result)
+			
+			
+
+			let totalBufferSize = 0
+			let rtt = 0
+	
+			while (true) {
+
+				const chunk = await result.read()
+				if (!chunk) break
+	
+				// Skip status messages
+				if (typeof chunk.payload === "number") continue
+				totalBufferSize += chunk.payload.byteLength
+				if (rtt === 0) {
+					rtt = performance.now() - start
+				}
+
+			} 
+	
+			const end = performance.now()
+			const duration = end - start
+			const measuredBandwidth = (totalBufferSize * 8) / (duration / 1000) / 1000 // kbps
+			const tc_bandwidth = parseFloat(localStorage.getItem("tc_bandwidth") || "0") || 0
+	
+			console.log("playback | probe done | duration:", duration, "bytes:", totalBufferSize, "bandwidth:", measuredBandwidth.toFixed(2), "tc_bw:", tc_bandwidth.toFixed(2))
+	
+			this.dispatchEvent(new CustomEvent("stat", {
+				detail: { type: "measuredBandwidth", value: measuredBandwidth }
+			}))
+	
+			this.#probeTestResults.push([duration, totalBufferSize, measuredBandwidth.toFixed(2), tc_bandwidth.toFixed(2)])
+	
+		} catch (e) {
+			console.error("playback | probe error", e)
+		} finally {
+			console.log("playback | probe closed")
+			if (sub) await sub.close()
+		}
+	
+		if (this.#useProbeTestData && this.#probeTestData.lastIteration === totalIteration) {
+			//this.downloadProbeStats()
+			this.#probeTestData.lastIteration = 0
+			clearInterval(this.#probeTimer)
+		}
+	}
+	
+	
+
 	/*NOT USED YET 
 	TODO: Measure download time. 
 	This is where the actual fetch happens.
 
+	
 
 	async #runProbe(namespace: string[]) {
 		const startTime = performance.now();
