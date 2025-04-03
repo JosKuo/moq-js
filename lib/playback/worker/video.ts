@@ -57,8 +57,15 @@ export class Renderer {
 	}
 
 	async #run() {
+		/*
+		Det jag gör här är att när NTP ändras så uppdaterar jag lastValidNtp och skriver ut det på skärmen.
+		Jag har även lagt till en variabel lastLatency som håller koll på senaste latency så att variabeln endast
+		ändras när jag får en ny NTP timestamp. Annars räknar den uppåt. 
+		*/
 		const reader = this.#timeline.frames.pipeThrough(this.#queue).getReader();
 		let lastValidNtp: number | undefined = undefined; // Store the last valid NTP timestamp
+		let previousNtp: number | undefined = undefined; // Store the previous NTP timestamp for comparison
+		let lastLatency : number | 0;
 		for (;;) {
 			const { value: frame, done } = await reader.read();
 	
@@ -67,50 +74,79 @@ export class Renderer {
 	
 			// Extract PRFT timestamp for this frame
 			const prft = this.#prftMap.get(frame.timestamp);
-			let ntp: number | undefined = prft ? ntptoms(prft) : lastValidNtp; 
-			let currTime = ntptoms(Date.now())
-
+			let ntp: number | undefined = prft ? ntptoms(prft) : lastValidNtp;
+	
 			// Adjust for server time offset
 			if (ntp !== undefined && !isNaN(ntp) && !isNaN(this.#serverTimeOffset)) {
 				ntp -= this.#serverTimeOffset;
 			}
 	
-			// Store the last valid NTP timestamp (only update if it's valid)
+			// Update lastValidNtp only if the new NTP timestamp is valid
 			if (ntp !== undefined && !isNaN(ntp)) {
 				lastValidNtp = ntp;
 			}
-
-		
 	
 			self.requestAnimationFrame(() => {
 				this.#canvas.width = frame.displayWidth;
 				this.#canvas.height = frame.displayHeight;
-	
+			
 				const ctx = this.#canvas.getContext("2d");
 				if (!ctx) throw new Error("failed to get canvas context");
-				
-				ctx.fillStyle = "white"; 
+			
+				ctx.fillStyle = "white";
 				ctx.fillRect(0, 0, this.#canvas.width, this.#canvas.height);
-
+			
 				ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+			
+				// Set font and text color
+				ctx.font = "48px Arial";
+				ctx.fillStyle = "white";
+			
+					// Calculate position for bottom-left corner
+					const padding = 10;
+					const textHeight = 48; // Approximate height of the text
+					const yPosition = this.#canvas.height - padding; // Bottom with padding
+			
+					// Display the last valid NTP timestamp only if it differs from the previous one
+					if (lastValidNtp !== undefined && lastValidNtp !== previousNtp) {
+						// Use performance.timeOrigin as the reference for latency calculation
+						const currentTime = performance.now() + performance.timeOrigin;
 				
-				// Display the last valid NTP timestamp
-				if (lastValidNtp !== undefined) {
-					ctx.font = "24px Arial";
-					ctx.fillStyle = "white";
-					const networkLatency = (performance.now() + performance.timeOrigin - lastValidNtp) / 1000; // Latency in seconds
+						// Ensure latency is not negative
+						const networkLatency = Math.max(0, (currentTime - lastValidNtp));
+				
+						// Add background for the text
+						const text = `Latency: ${networkLatency}ms`;
+						const textWidth = ctx.measureText(text).width;
+				
+						ctx.fillStyle = "rgba(0, 0, 0, 0.7)"; // Semi-transparent black background
+						ctx.fillRect(padding, yPosition - textHeight - padding, textWidth + padding * 2, textHeight + padding);
+				
+						// Draw the text
+						ctx.fillStyle = "white";
+						ctx.fillText(text, padding * 2, yPosition - padding);
+				
+						// Update the previous NTP timestamp
+						previousNtp = lastValidNtp;
+						lastLatency = networkLatency;
+					} else {
+						// Add background for the text
 
-					ctx.fillText(`Latency: ${networkLatency}`, 20, 40);
-				}
-	
+						const text = `Latency: ${lastLatency}ms`;
+						const textWidth = ctx.measureText(text).width;
+				
+						ctx.fillStyle = "rgba(0, 0, 0, 0.7)"; // Semi-transparent black background
+						ctx.fillRect(padding, yPosition - textHeight - padding, textWidth + padding * 2, textHeight + padding);
+				
+						// Draw the text
+						ctx.fillStyle = "white";
+						ctx.fillText(text, padding * 2, yPosition - padding);
+					}
+			
 				frame.close();
 			});
 		}
 	}
-	
-	
-	
-	
 
 	#start(controller: TransformStreamDefaultController<VideoFrame>) {
 		this.#decoder = new VideoDecoder({

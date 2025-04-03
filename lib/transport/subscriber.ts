@@ -19,6 +19,23 @@ export class Subscriber {
 	#subscribeNext = 0n
 
 	#trackToIDMap = new Map<string, bigint>()
+	#fetch = new Map<bigint, FetchSend>()
+
+	// probing settings
+	#useProbing: boolean = false
+	#probeInterval: number = 2000
+	#probeSize: number = 20000;
+	#probePriority: number = 1;
+	#probeTimer: number = 0
+	#useProbeTestData = false
+	#probeTestResults: any[] = []
+	#probeTestData = {
+		start: 10000,
+		stop: 300000,
+		increment: 10000,
+		iteration: 3,
+		lastIteration: 0
+	}
 
 	constructor(control: Control.Stream, objects: Objects) {
 		this.#control = control
@@ -40,7 +57,12 @@ export class Subscriber {
 			await this.recvSubscribeError(msg)
 		} else if (msg.kind == Control.Msg.SubscribeDone) {
 			await this.recvSubscribeDone(msg)
-		} else {
+		} else if(msg.kind == Control.Msg.FetchOk) {
+			this.recvFetchOk(msg)
+		} else if(msg.kind == Control.Msg.FetchError) {
+			this.recvFetchError(msg)
+		}
+		else {
 			throw new Error(`unknown control message`) // impossible
 		}
 	}
@@ -139,6 +161,86 @@ export class Subscriber {
 
 		await subscribe.onData(reader)
 	}
+
+	async fetch(namespace: string[], track: string, start_group: number, start_object: number, end_group: number, end_object: number) {
+		/* Sends a fetch message */
+		const id = this.#subscribeNext++
+
+		//Create a new fetch instance
+		const fetch = new FetchSend(this.#control, id) 
+		this.#fetch.set(id, fetch) //Set the fetch instance in the map
+
+		this.#trackToIDMap.set(track, id) // Set the track ID in the map
+
+		// Send the control message.
+		await this.#control.send({ 
+			kind: Control.Msg.Fetch,
+			id,
+			namespace,
+			name: track,
+			subscriber_priority: 1, 
+			group_order: Control.GroupOrder.Publisher,
+			start_group,
+			start_object,
+			end_group,
+			end_object,
+		})
+
+		return fetch
+	}
+
+		//Subscribe to a probeTrack
+	async runProbe(namespace: string[]){
+
+		const probeTrackName = ".probe:" + this.#probeSize + ":" + this.#probePriority
+		const id = this.#subscribeNext++
+		const subscribeProbe = new SubscribeSend(this.#control, id, namespace, probeTrackName)
+		this.#subscribe.set(id, subscribeProbe)
+		this.#trackToIDMap.set(probeTrackName, id)
+
+		await this.#control.send({
+			kind: Control.Msg.Subscribe,
+			id,
+			trackId: id,
+			namespace,
+			name: probeTrackName,
+			subscriber_priority: 254, // Lowest priority (High prio: 0, Low prio: 254)
+			group_order: Control.GroupOrder.Publisher,
+			location: {
+				mode: "latest_group",
+			},
+		})
+
+		return subscribeProbe
+	}
+
+	recvFetchOk(msg: Control.FetchOk) {
+		/* Recieves fetch */
+
+		// Check if the fetch is valid, for example, if the ID is in the map
+		const fetch = this.#fetch.get(msg.id)
+		console.log(fetch)
+		if (!fetch) {
+			throw new Error(`fetch ok for unknown id: ${msg.id}`)
+		}
+		fetch.onComplete()
+	}
+
+	recvFetchError(msg: Control.FetchError) {
+		/* Recieves fetch error */
+		const fetch = this.#fetch.get(msg.id)
+		if (!fetch) {
+			throw new Error(`fetch error for unknown id: ${msg.id}`)
+		}
+
+		fetch.onError(msg.code, msg.reason)
+	}
+
+	recvFetchCancel(msg: Control.FetchCancel) {
+		/* TODO: Recieves fetch cancel */
+		
+	}
+
 }
 
 export class AnnounceRecv {
@@ -168,6 +270,51 @@ export class AnnounceRecv {
 		this.#state = "closed"
 
 		return this.#control.send({ kind: Control.Msg.AnnounceError, namespace: this.namespace, code, reason })
+	}
+}
+
+export class FetchSend {
+	#control: Control.Stream
+	#id: bigint
+	#data = new Queue<TrackReader | SubgroupReader>()
+	#state: "init" | "completed" | "error" = "init"
+
+	constructor(control: Control.Stream, id: bigint) {
+		this.#control = control
+		this.#id = id 
+	}
+
+	async onData(reader: TrackReader | SubgroupReader) {
+		/* Receives data from the fetch*/
+		if (this.#state === "init" && !this.#data.closed()) {
+			await this.#data.push(reader)
+		}
+	}
+
+	async onError(code: bigint, reason: string) {
+		/* Set state to error and abort */
+		this.#state = "error"
+		const err = new Error(`FETCH_ERROR (${code}): ${reason}`)
+		await this.#data.abort(err)
+	}
+
+	async onComplete() {
+		/* Set state to completed and close stream*/
+		this.#state = "completed"
+	}
+
+	async data() {
+		/* Wait for the next data stream ? NOT APPLICABLE ?*/
+		return await this.#data.next()
+	}
+
+	async cancel() {
+		/* Cancel the fetch */
+		if (this.#state === "init") {
+			this.#state = "error"
+			await this.#control.send({ kind: Control.Msg.FetchCancel, id: this.#id })
+			//await this.#data.close()
+		}
 	}
 }
 
@@ -218,4 +365,5 @@ export class SubscribeSend {
 	async data() {
 		return await this.#data.next()
 	}
+
 }

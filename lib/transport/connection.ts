@@ -31,7 +31,6 @@ export class Connection {
 
 		this.#publisher = new Publisher(this.#control, this.#objects)
 		this.#subscriber = new Subscriber(this.#control, this.#objects)
-
 		this.#running = this.#run()
 	}
 
@@ -63,6 +62,24 @@ export class Connection {
 		return this.#publisher.subscribed()
 	}
 
+	probe(namespace: string[]){
+		return this.#subscriber.runProbe(namespace)
+	}
+	/*The method called to send the fetch. 
+	TODO: How should the values be set? 
+	* Maybe works just for measurments to store and send the same data always?
+	*/
+	fetch(namespace: string[], track: string) {
+		
+		return this.#subscriber.fetch(
+			namespace, 
+			track, 
+			0, 
+			0, 
+			3, 
+			0); //Bara för att testa
+	}
+	
 	async #runControl() {
 		// Receive messages until the connection is closed.
 		for (;;) {

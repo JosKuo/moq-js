@@ -91,6 +91,7 @@ export default class Player extends EventTarget {
 		const tracks = new Array<Catalog.Track>()
 
 		this.#catalog.tracks.forEach((track, index) => {
+
 			if (index == this.#tracknum || Catalog.isAudioTrack(track)) {
 				if (!track.namespace) throw new Error("track has no namespace")
 				if (track.initTrack) inits.add([track.namespace.join("/"), track.initTrack])
@@ -110,6 +111,7 @@ export default class Player extends EventTarget {
 	}
 
 	async #runInit(namespace: string, name: string) {
+
 		const sub = await this.#connection.subscribe([namespace], name)
 		try {
 			const init = await Promise.race([sub.data(), this.#running])
@@ -126,6 +128,34 @@ export default class Player extends EventTarget {
 		}
 	}
 
+	/*NOT USED YET 
+	TODO: Measure download time. 
+	This is where the actual fetch happens.
+
+
+	async #runProbe(namespace: string[]) {
+		const startTime = performance.now();
+	
+		const subprobe = await this.#connection.probe(namespace);
+		console.log("subprobe object:", subprobe);
+	
+		try {
+			for (;;) {
+				const probeData = await subprobe.data();
+				if (!probeData) break; // Exit the loop if no more data is available
+	
+				// Log the received data
+				console.log("Received probe data:", probeData);
+			}
+		} catch (error) {
+			console.error("Error fetching probe data:", error);
+		}
+	
+		const endTime = performance.now();
+		const downloadTime = endTime - startTime;
+		console.log("Download time:", downloadTime);
+	}
+	*/
 	async #trackTask(track: Catalog.Track) {
 		if (!track.namespace) throw new Error("track has no namespace")
 
@@ -138,14 +168,18 @@ export default class Player extends EventTarget {
 			// Save ref to last audio track we subscribed to for unmuting
 			this.#audioTrackName = track.name
 		}
-
 		if (kind == "video") {
 			this.#videoTrackName = track.name
 		}
 
 		let eventOfFirstSegmentSent = false
-		const sub = await this.#connection.subscribe(track.namespace, track.name)
+		
+		/*This is where the fetch happens atm. 
+			Make this a separate function and call it from the #runTrack function?.
+		
+		const subprobe = this.#connection.fetch(track.namespace, track.name)*/
 
+		const sub = await this.#connection.subscribe(track.namespace, track.name)
 		try {
 			for (;;) {
 				const segment = await Promise.race([sub.data(), this.#running])
@@ -189,23 +223,32 @@ export default class Player extends EventTarget {
 			await sub.close()
 		}
 	}
-
 	#runTrack(track: Catalog.Track) {
 		if (this.#trackTasks.has(track.name)) {
 			console.warn(`Already exist a runTrack task for the track: ${track.name}`)
 			return
 		}
-
 		const task = (async () => this.#trackTask(track))()
 
 		this.#trackTasks.set(track.name, task)
-
+		
 		task.catch((err) => {
 			console.error(`Error to subscribe to track ${track.name}`, err)
 			super.dispatchEvent(new CustomEvent("error", { detail: err }))
 		}).finally(() => {
 			this.#trackTasks.delete(track.name)
 		})
+
+		/*
+		UNCOMMENT TO KEEP WORKING ON PROBES
+
+		if (track.namespace) {
+			this.#runProbe(track.namespace)
+		} else {
+			console.warn(`Track ${track.name} has no namespace, skipping probe.`)
+		}
+			
+		*/
 	}
 
 	#startEmittingTimeUpdate() {

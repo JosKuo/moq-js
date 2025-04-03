@@ -20,7 +20,9 @@ export function isPublisher(m: Message): m is Publisher {
 		m.kind == Msg.SubscribeError ||
 		m.kind == Msg.SubscribeDone ||
 		m.kind == Msg.Announce ||
-		m.kind == Msg.Unannounce
+		m.kind == Msg.Unannounce ||
+		m.kind == Msg.FetchOk || 
+		m.kind == Msg.FetchError
 	)
 }
 

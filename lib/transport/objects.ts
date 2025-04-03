@@ -7,7 +7,7 @@ export enum StreamType {
 	// Datagram = 0x1, // No datagram support
 	Track = 0x2, // Deprecated in DRAFT_07
 	Subgroup = 0x4,
-	// Fetch = 0x5, // Added in DRAFT_07
+	Fetch = 0x5, // Added in DRAFT_07
 }
 
 export enum Status {
@@ -89,6 +89,7 @@ export class Objects {
 
 		const { value, done } = await streams.read()
 		streams.releaseLock()
+		
 
 		if (done) return
 
@@ -115,14 +116,16 @@ export class Objects {
 				publisher_priority: await r.u8(),
 			}
 			res = new SubgroupReader(h, r)
+		} else if (type == StreamType.Fetch) {
+			// Handle Fetch stream type here if needed
+			// For now, you can log or ignore it
+			return undefined; // Or handle it as per your requirements
 		} else {
-			console.log("transport/objects.ts: unknown stream type: ", type)
-			throw new Error("unknown stream type")
+			console.log("transport/objects.ts: unknown stream type: ", type);
+			throw new Error("unknown stream type");
 		}
-
-		// console.trace("receive object", res.header)
-
-		return res
+	
+		return res;
 	}
 }
 
