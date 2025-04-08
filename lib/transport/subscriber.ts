@@ -109,8 +109,12 @@ export class Subscriber {
 	}
 
 	async unsubscribe(track: string) {
+		console.log(`Starting to unsunscribe from... ${track}`);
+
 		if (this.#trackToIDMap.has(track)) {
 			const trackID = this.#trackToIDMap.get(track)
+			console.log(`Found track ID for ${track}: ${trackID}`);
+
 			if (trackID === undefined) {
 				console.warn(`Exception track ${track} not found in trackToIDMap.`)
 				return

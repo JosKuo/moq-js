@@ -30,6 +30,7 @@ export class Renderer {
 	#paused: boolean
 	#hasSentWaitingForKeyFrameEvent: boolean = false
 	#serverTimeOffset: number = 0
+	#latencyTestResults: any[] = [] //Test result to download
 
 	constructor(config: Message.ConfigVideo, timeline: Component) {
 		this.#canvas = config.canvas
@@ -56,6 +57,23 @@ export class Renderer {
 		this.#paused = false
 	}
 
+	downloadLatencyStats = () => {
+		if (this.#latencyTestResults.length > 0) {
+			const headers = ["NTP-timestamp", "currentTime", "Latency"];
+			const csvContent =
+				headers.join("\t") +
+				"\n" +
+				this.#latencyTestResults.map((e) => Object.values(e).join("\t")).join("\n");
+	
+			// Send the CSV content to the main thread
+			self.postMessage({
+				type: "downloadLatencyStats",
+				data: csvContent,
+			});
+		}
+	};
+	
+
 	async #run() {
 		/*
 		Det jag gör här är att när NTP ändras så uppdaterar jag lastValidNtp och skriver ut det på skärmen.
@@ -75,7 +93,7 @@ export class Renderer {
 			// Extract PRFT timestamp for this frame
 			const prft = this.#prftMap.get(frame.timestamp);
 			let ntp: number | undefined = prft ? ntptoms(prft) : lastValidNtp;
-	
+			
 			// Adjust for server time offset
 			if (ntp !== undefined && !isNaN(ntp) && !isNaN(this.#serverTimeOffset)) {
 				ntp -= this.#serverTimeOffset;
@@ -125,7 +143,7 @@ export class Renderer {
 						// Draw the text
 						ctx.fillStyle = "white";
 						ctx.fillText(text, padding * 2, yPosition - padding);
-				
+						this.#latencyTestResults.push([lastValidNtp, currentTime, networkLatency])
 						// Update the previous NTP timestamp
 						previousNtp = lastValidNtp;
 						lastLatency = networkLatency;
@@ -144,6 +162,8 @@ export class Renderer {
 					}
 			
 				frame.close();
+				//this.downloadLatencyStats();
+				
 			});
 		}
 	}

@@ -40,16 +40,16 @@ export default class Player extends EventTarget {
 	#useProbing: boolean = false
     #probeInterval: number = 2000
     #probeSize: number = 40000
-    #probePriority: number = 0 // 0 is lowest priority, 1 is highest
-    #probeTimer: number = 0
-    #useProbeTestData = true
-    #probeTestResults: any[] = []
+    #probePriority: number = 254 // 0 is lowest priority, 1 is highest
+    #probeTimer: number = 0 //loop controller that triggers runProbe on a regular schedule
+    #useProbeTestData = true //Used for testing. 
+    #probeTestResults: any[] = [] //Test result to download
     #probeTestData = {
-        start: 10000,
-        stop: 300000,
-        increment: 10000,
-        iteration: 3,
-        lastIteration: 0
+        start:  20000000, //start probing at 10000 bytes
+        stop: 20000000, //stop probing att 300000 bytes
+        increment: 10000000,
+        iteration: 1, //Try each probesize 3 times. 
+        lastIteration: 0 //Counter to track how many total probes have been run
     }
 
 	#enableSwitchTrackIdFeature = this.getFromQueryString("enableSwitchTrackIdFeature", "false") === "true"
@@ -60,12 +60,14 @@ export default class Player extends EventTarget {
 	#close!: () => void
 	#abort!: (err: Error) => void
 	#trackTasks: Map<string, Promise<void>> = new Map()
+	#bitrates: Map<Catalog.Track, number | undefined>
 
 	private constructor(connection: Connection, catalog: Catalog.Root, tracknum: number, canvas: OffscreenCanvas) {
 		super()
 		this.#connection = connection
 		this.#catalog = catalog
 		this.#tracksByName = new Map(catalog.tracks.map((track) => [track.name, track]))
+		this.#bitrates = new Map(catalog.tracks.map((track) => [track, track.selectionParams.bitrate]))
 		this.#tracknum = tracknum
 		this.#audioTrackName = ""
 		this.#videoTrackName = ""
@@ -90,6 +92,8 @@ export default class Player extends EventTarget {
 			
 		})
 
+		
+		console.log("currentTrack: ", this.getCurrentTrack())
 		this.parseProbeParametersAndRun()
 
 	}
@@ -164,11 +168,9 @@ export default class Player extends EventTarget {
 
 	parseProbeParametersAndRun() {
         try {
-            if (!location.search) return
-
-            const probeSize = parseInt(this.getFromQueryString("probeSize", "0"))
-            const probePriority = parseInt(this.getFromQueryString("probePriority", "-1"))
-            const probeInterval = parseInt(this.getFromQueryString("probeInterval", "0"))
+            const probeSize = 200000;
+            const probePriority = 254;
+            const probeInterval = 3000;
 
             let useProbing = false
             if (probeSize > 0) {
@@ -219,9 +221,10 @@ export default class Player extends EventTarget {
 	
 	runProbe = async () => { //?probeSize=40000&probePriority=0&probeInterval=3000
 		console.log("playback | runProbe")
-	
+
 		let totalIteration = 0
 		if (this.#useProbeTestData && this.#probeTestData) {
+			console.log("using probe test data")
 			const totalProbeSizes = (this.#probeTestData.stop - this.#probeTestData.start) / this.#probeTestData.increment + 1
 			totalIteration = totalProbeSizes * this.#probeTestData.iteration
 			console.log("playback | probe | totalIteration", totalIteration)
@@ -242,7 +245,6 @@ export default class Player extends EventTarget {
 				sub.data(),
 				new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for probe data")), 3000))
 			])
-			console.log("probe | result", result)
 			
 			
 
@@ -252,6 +254,7 @@ export default class Player extends EventTarget {
 			while (true) {
 
 				const chunk = await result.read()
+
 				if (!chunk) break
 	
 				// Skip status messages
@@ -262,10 +265,10 @@ export default class Player extends EventTarget {
 				}
 
 			} 
-	
+
 			const end = performance.now()
 			const duration = end - start
-			const measuredBandwidth = (totalBufferSize * 8) / (duration / 1000) / 1000 // kbps
+			const measuredBandwidth = (totalBufferSize * 8) / (duration / 1000) //bps
 			const tc_bandwidth = parseFloat(localStorage.getItem("tc_bandwidth") || "0") || 0
 	
 			console.log("playback | probe done | duration:", duration, "bytes:", totalBufferSize, "bandwidth:", measuredBandwidth.toFixed(2), "tc_bw:", tc_bandwidth.toFixed(2))
@@ -273,6 +276,24 @@ export default class Player extends EventTarget {
 			this.dispatchEvent(new CustomEvent("stat", {
 				detail: { type: "measuredBandwidth", value: measuredBandwidth }
 			}))
+
+
+			for (let i = this.#catalog.tracks.length - 1; i >= 0; i--) {
+				const track = this.#catalog.tracks[i];
+				const trackBitrate = this.#bitrates.get(track)!;
+			
+				// Check if the measured bandwidth can support this track
+				if (measuredBandwidth * 0.8 > trackBitrate) {
+					const currentTrack = this.getCurrentTrack();
+			
+					// Only switch if the new track is different and has a higher bitrate
+					if (currentTrack && currentTrack.name !== track.name && trackBitrate > this.#bitrates.get(currentTrack)!) {
+						this.switchTrack(track.name);
+						console.log("Switching track to ", track.name);
+					}
+					break; // Stop searching once we find the highest supported track
+				}
+			}
 	
 			this.#probeTestResults.push([duration, totalBufferSize, measuredBandwidth.toFixed(2), tc_bandwidth.toFixed(2)])
 	
@@ -284,43 +305,14 @@ export default class Player extends EventTarget {
 		}
 	
 		if (this.#useProbeTestData && this.#probeTestData.lastIteration === totalIteration) {
-			//this.downloadProbeStats()
+			this.downloadProbeStats()
 			this.#probeTestData.lastIteration = 0
 			clearInterval(this.#probeTimer)
 		}
 	}
 	
-	
 
-	/*NOT USED YET 
-	TODO: Measure download time. 
-	This is where the actual fetch happens.
 
-	
-
-	async #runProbe(namespace: string[]) {
-		const startTime = performance.now();
-	
-		const subprobe = await this.#connection.probe(namespace);
-		console.log("subprobe object:", subprobe);
-	
-		try {
-			for (;;) {
-				const probeData = await subprobe.data();
-				if (!probeData) break; // Exit the loop if no more data is available
-	
-				// Log the received data
-				console.log("Received probe data:", probeData);
-			}
-		} catch (error) {
-			console.error("Error fetching probe data:", error);
-		}
-	
-		const endTime = performance.now();
-		const downloadTime = endTime - startTime;
-		console.log("Download time:", downloadTime);
-	}
-	*/
 	async #trackTask(track: Catalog.Track) {
 		if (!track.namespace) throw new Error("track has no namespace")
 
@@ -404,16 +396,6 @@ export default class Player extends EventTarget {
 			this.#trackTasks.delete(track.name)
 		})
 
-		/*
-		UNCOMMENT TO KEEP WORKING ON PROBES
-
-		if (track.namespace) {
-			this.#runProbe(track.namespace)
-		} else {
-			console.warn(`Track ${track.name} has no namespace, skipping probe.`)
-		}
-			
-		*/
 	}
 
 	#startEmittingTimeUpdate() {
