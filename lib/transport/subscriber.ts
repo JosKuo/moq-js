@@ -109,7 +109,7 @@ export class Subscriber {
 	}
 
 	async unsubscribe(track: string) {
-		console.log(`Starting to unsunscribe from... ${track}`);
+		console.log(`Starting to unsunscribe from track with ID... ${this.#trackToIDMap.get(track)}`);
 
 		if (this.#trackToIDMap.has(track)) {
 			const trackID = this.#trackToIDMap.get(track)
@@ -122,6 +122,7 @@ export class Subscriber {
 			try {
 				await this.#control.send({ kind: Control.Msg.Unsubscribe, id: trackID })
 				this.#trackToIDMap.delete(track)
+
 			} catch (error) {
 				console.error(`Failed to unsubscribe from track ${track}:`, error)
 			}

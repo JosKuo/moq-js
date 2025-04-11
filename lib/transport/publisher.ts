@@ -94,8 +94,8 @@ export class Publisher {
 		})
 	}
 
-	recvUnsubscribe(_msg: Control.Unsubscribe) {
-		throw new Error("TODO unsubscribe")
+	async recvUnsubscribe(msg: Control.Unsubscribe) {
+		console.log("Unsubscribe", msg.id)
 	}
 }
 
@@ -133,9 +133,22 @@ export class AnnounceSend {
 		}
 	}
 
-	async close() {
-		// TODO implement unsubscribe
-		// await this.#inner.sendUnsubscribe()
+	async close(code = 0n, reason = "") {
+		// Check if already closed
+		if (this.#state.value()[0] === "ack" || this.#state.value()[0] instanceof Error) return;
+		this.#state.update(new Error("closed"));
+	
+		try {
+			// Send an unannounce message to the publisher
+			await this.#control.send({
+				kind: Control.Msg.Unannounce,
+				namespace: this.namespace
+			});
+	
+			console.log(`Announcement for namespace ${this.namespace.join("/")} closed.`);
+		} catch (err) {
+			console.error(`Failed to close announcement for namespace ${this.namespace.join("/")}:`, err);
+		}
 	}
 
 	closed() {

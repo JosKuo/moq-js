@@ -37,6 +37,7 @@ export class Client {
 		if (fingerprint) options.serverCertificateHashes = [fingerprint]
 
 		const quic = new WebTransport(this.config.url, options)
+		
 		await quic.ready
 
 		const stream = await quic.createBidirectionalStream()

@@ -117,6 +117,13 @@ export default class Backend {
 		if (msg === "waitingforkeyframe") {
 			this.#eventTarget.dispatchEvent(new Event("waitingforkeyframe"))
 		}
+		if (msg.latency) {	
+			this.#eventTarget.dispatchEvent(
+				new CustomEvent("latency", {
+					detail: msg.latency,
+				}),
+			)
+		}
 	}
 }
 

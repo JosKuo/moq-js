@@ -89,8 +89,13 @@ export interface ToWorker {
 export interface FromWorker {
 	// Sent back to the main thread regularly to update the UI
 	timeline?: Timeline
+	latency ?: [number, number]
 }
 
+
+export function FromWorker(FromWorker: any) {
+	throw new Error("Function not implemented.")
+}
 /*
 interface ToWorklet {
 	config?: Audio.Config

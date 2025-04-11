@@ -36,23 +36,29 @@ export default class Player extends EventTarget {
 	#paused: boolean
 	#liveStartTime: number = Date.now()
 
+	//Latency settings
+	#latencyTimer: number = 10000
+	#testLatency : boolean = true
+	#latencyDone: boolean = false
+	
 	//Probing settings
 	#useProbing: boolean = false
-    #probeInterval: number = 2000
-    #probeSize: number = 40000
-    #probePriority: number = 254 // 0 is lowest priority, 1 is highest
-    #probeTimer: number = 0 //loop controller that triggers runProbe on a regular schedule
-    #useProbeTestData = true //Used for testing. 
+    #probeInterval: number = 10000 //How often probe is run
+    #probeSize: number = 1250000
+    #probePriority: number = 254 
+    #probeTimer: number = 3000 //loop controller that triggers runProbe on a regular schedule
     #probeTestResults: any[] = [] //Test result to download
-    #probeTestData = {
-        start:  20000000, //start probing at 10000 bytes
-        stop: 20000000, //stop probing att 300000 bytes
-        increment: 10000000,
-        iteration: 1, //Try each probesize 3 times. 
-        lastIteration: 0 //Counter to track how many total probes have been run
-    }
+	#latencyTestResults: any[] = [] //Test result to download
+	#iterations_per_round = 5
 
-	#enableSwitchTrackIdFeature = this.getFromQueryString("enableSwitchTrackIdFeature", "false") === "true"
+	/*#useProbeTestData = true //Used for testing. 
+    #probeTestData = {
+        start:  1250000, //start probing at 10000 bytes
+        stop: 125000, //stop probing att 300000 bytes
+        increment: 0,
+        iteration: 3, //Try each probesize 3 times. 
+        lastIteration: 0 //Counter to track how many total probes have been run
+    }*/
 
 	// Running is a promise that resolves when the player is closed.
 	// #close is called with no error, while #abort is called with an error.
@@ -74,6 +80,24 @@ export default class Player extends EventTarget {
 		this.#muted = false
 		this.#paused = false
 		this.#backend = new Backend({ canvas, catalog }, this)
+		
+		 // Listen for latency events from the Backend
+		 if(this.#latencyDone == false && this.#testLatency == true){
+			this.addEventListener("latency", ((event: Event) => {
+				const customEvent = event as CustomEvent;
+				if(performance.now() < this.#latencyTimer && this.#latencyDone == false){
+					this.#latencyTestResults.push(customEvent.detail);
+					console.log(this.#latencyTestResults)
+					
+				}
+				else if(performance.now() >= this.#latencyTimer && this.#latencyDone == false){
+					this.#latencyDone = true,
+					console.log(`Done with latency test after ${this.#latencyTimer/1000}s, download the results`)
+					this.downloadLatencyStats()
+				}
+			}) as EventListener);
+	}
+
 		super.dispatchEvent(new CustomEvent("catalogupdated", { detail: catalog }))
 		super.dispatchEvent(new CustomEvent("loadedmetadata", { detail: catalog }))
 
@@ -91,10 +115,11 @@ export default class Player extends EventTarget {
 			this.#abort(err)
 			
 		})
-
 		
 		console.log("currentTrack: ", this.getCurrentTrack())
-		this.parseProbeParametersAndRun()
+		if(this.#useProbing == true){
+			this.parseProbeParametersAndRun()
+		}
 
 	}
 
@@ -139,6 +164,7 @@ export default class Player extends EventTarget {
 	async #runInit(namespace: string, name: string) {
 
 		const sub = await this.#connection.subscribe([namespace], name)
+
 		try {
 			const init = await Promise.race([sub.data(), this.#running])
 			if (!init) throw new Error("no init data")
@@ -167,37 +193,11 @@ export default class Player extends EventTarget {
     }
 
 	parseProbeParametersAndRun() {
-        try {
-            const probeSize = 200000;
-            const probePriority = 254;
-            const probeInterval = 3000;
 
-            let useProbing = false
-            if (probeSize > 0) {
-                useProbing = true
-                this.#probeSize = probeSize
-            }
-            if (probePriority > -1) {
-                useProbing = true
-                this.#probePriority = probePriority
-            }
-            // set probeInterval and start probeTimer
-            if (probeInterval > 0 && probeInterval !== this.#probeInterval) {
-                useProbing = true
-                if (this.#probeTimer) {
-                    clearInterval(this.#probeTimer)
-                }
-                this.#probeInterval = probeInterval
-                this.#probeTimer = setInterval(this.runProbe, this.#probeInterval)
-            }
+		clearInterval(this.#probeTimer)
+		this.#probeTimer = setInterval(this.runProbe, this.#probeInterval)
+		console.log("playback | parseProbeParameters | probeSize: %d probePriority: %d probeInterval: %d", this.#probeSize, this.#probePriority, this.#probeInterval)
 
-            if (useProbing) {
-                this.#useProbing = true
-                console.log("playback | parseProbeParameters | probeSize: %d probePriority: %d probeInterval: %d", this.#probeSize, this.#probePriority, this.#probeInterval)
-            }
-        } catch (e) {
-            console.error("playback | parseProbeParameters | error", e)
-        }
     }
 
 	downloadProbeStats = () => {
@@ -218,100 +218,122 @@ export default class Player extends EventTarget {
 
         link.remove()
     }
+
+	downloadLatencyStats = () => {
+        const link = document.createElement("a")
+        document.body.appendChild(link)
+
+        // download logs
+        if (this.#latencyTestResults.length > 0) {
+            const headers = ["NTP", "Latency"]
+            const csvContent = "data:application/vnd.ms-excel;charset=utf-8," + headers.join("\t") + "\n" + this.#latencyTestResults.map((e) => e.join("\t")).join("\n"); // Properly format the list of lists
+
+            const encodedUri = encodeURI(csvContent)
+            link.setAttribute("href", encodedUri)
+            link.setAttribute("download", "logs_" + Date.now() + ".xls")
+            link.click()
+        } else {
+            console.warn("playback | downloadLatencyStats | no logs")
+        }
+
+        link.remove()
+    }
 	
 	runProbe = async () => { //?probeSize=40000&probePriority=0&probeInterval=3000
 		console.log("playback | runProbe")
-
-		let totalIteration = 0
-		if (this.#useProbeTestData && this.#probeTestData) {
+		
+		let bitrates : number[] = [4000000, 5000000, 6000000] //bps
+		let bw_results: number[] = []
+		/*if (this.#useProbeTestData && this.#probeTestData) {
 			console.log("using probe test data")
 			const totalProbeSizes = (this.#probeTestData.stop - this.#probeTestData.start) / this.#probeTestData.increment + 1
 			totalIteration = totalProbeSizes * this.#probeTestData.iteration
 			console.log("playback | probe | totalIteration", totalIteration)
 			this.#probeSize = this.#probeTestData.start + Math.floor(this.#probeTestData.lastIteration / this.#probeTestData.iteration) * this.#probeTestData.increment
 			++this.#probeTestData.lastIteration
-		}
-	
-		let sub: any
-		try {
-
-			const start = performance.now()
-			const probeTrackName = ".probe:" + this.#probeSize + ":" + this.#probePriority
-			sub = await this.#connection.subscribe(["bbb"], probeTrackName)
-	
-			console.log("playback | probe sub", sub, probeTrackName)
+		}*/
+		for(this.#iterations_per_round; this.#iterations_per_round >0; --this.#iterations_per_round) {
+			let sub: any
+			try {
+				const start = performance.now()
+				const probeTrackName = ".probe:" + this.#probeSize*this.#probeTimer + ":" + this.#probePriority
+				sub = await this.#connection.subscribe(["bbb"], probeTrackName)
+		
+				console.log("playback | probe sub", sub, probeTrackName)
+				
+				const result = await Promise.race([
+					sub.data(),
+					new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for probe data")), 3000))
+				])
 			
-			const result = await Promise.race([
-				sub.data(),
-				new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for probe data")), 3000))
-			])
-			
-			
+				let totalBufferSize = 0
+		
+				while (true) {
 
-			let totalBufferSize = 0
-			let rtt = 0
-	
-			while (true) {
+					const chunk = await result.read()
 
-				const chunk = await result.read()
+					if (!chunk) break
+		
+					// Skip status messages
+					if (typeof chunk.payload === "number") continue
+					totalBufferSize += chunk.payload.byteLength
+				} 
 
-				if (!chunk) break
-	
-				// Skip status messages
-				if (typeof chunk.payload === "number") continue
-				totalBufferSize += chunk.payload.byteLength
-				if (rtt === 0) {
-					rtt = performance.now() - start
-				}
-
-			} 
-
-			const end = performance.now()
-			const duration = end - start
-			const measuredBandwidth = (totalBufferSize * 8) / (duration / 1000) //bps
-			const tc_bandwidth = parseFloat(localStorage.getItem("tc_bandwidth") || "0") || 0
-	
-			console.log("playback | probe done | duration:", duration, "bytes:", totalBufferSize, "bandwidth:", measuredBandwidth.toFixed(2), "tc_bw:", tc_bandwidth.toFixed(2))
-	
-			this.dispatchEvent(new CustomEvent("stat", {
-				detail: { type: "measuredBandwidth", value: measuredBandwidth }
-			}))
-
-
-			for (let i = this.#catalog.tracks.length - 1; i >= 0; i--) {
-				const track = this.#catalog.tracks[i];
-				const trackBitrate = this.#bitrates.get(track)!;
-			
-				// Check if the measured bandwidth can support this track
-				if (measuredBandwidth * 0.8 > trackBitrate) {
-					const currentTrack = this.getCurrentTrack();
-			
-					// Only switch if the new track is different and has a higher bitrate
-					if (currentTrack && currentTrack.name !== track.name && trackBitrate > this.#bitrates.get(currentTrack)!) {
-						this.switchTrack(track.name);
-						console.log("Switching track to ", track.name);
-					}
-					break; // Stop searching once we find the highest supported track
-				}
+				const end = performance.now()
+				const duration = end - start
+				const measuredBandwidth = (totalBufferSize * 8) / (duration / 1000) //bps
+				
+				console.log("playback | probe done | duration:", duration, "bytes:", totalBufferSize, "bandwidth:", measuredBandwidth.toFixed(2), "tc_bw:")
+		
+				this.dispatchEvent(new CustomEvent("stat", {
+					detail: { type: "measuredBandwidth", value: measuredBandwidth }
+				}))
+				bw_results.push(measuredBandwidth)
+				this.#probeTestResults.push([duration, totalBufferSize, measuredBandwidth.toFixed(2)])
+		
+			} catch (e) {
+				console.error("playback | probe error", e)
+			} finally {
+				console.log("playback | probe closed")
+				if (sub) await sub.close()
 			}
-	
-			this.#probeTestResults.push([duration, totalBufferSize, measuredBandwidth.toFixed(2), tc_bandwidth.toFixed(2)])
-	
-		} catch (e) {
-			console.error("playback | probe error", e)
-		} finally {
-			console.log("playback | probe closed")
-			if (sub) await sub.close()
+		
+			/*if (this.#useProbeTestData && this.#probeTestData.lastIteration === totalIteration) {
+				this.downloadProbeStats()
+				this.#probeTestData.lastIteration = 0
+				clearInterval(this.#probeTimer)
+			}*/
 		}
-	
-		if (this.#useProbeTestData && this.#probeTestData.lastIteration === totalIteration) {
-			this.downloadProbeStats()
-			this.#probeTestData.lastIteration = 0
-			clearInterval(this.#probeTimer)
-		}
-	}
-	
+		const average_bw = bw_results.length > 0 
+			? bw_results.reduce((acc, e) => acc + e, 0) / bw_results.length 
+			: 0; // Default to 0 if no results
 
+		if (bw_results.length === 0) {
+			console.warn("playback | runProbe | No bandwidth measurements were collected.");
+		}
+
+		const currentTrack = this.getCurrentTrack();
+		console.log("playback | average_bw", average_bw);
+		
+		if (currentTrack && currentTrack.selectionParams?.bitrate) {
+			const currentBitrate = currentTrack.selectionParams.bitrate; // in Mbps
+			const nextTrack = this.#catalog.tracks
+				.filter((track) => track.selectionParams?.bitrate && track.selectionParams.bitrate > currentBitrate)
+				.sort((a, b) => (a.selectionParams.bitrate ?? 0) - (b.selectionParams.bitrate ?? 0))[0];
+			
+			
+			if (nextTrack) {
+				console.log(`Switching to higher bitrate track: ${nextTrack.name}`);
+				//this.switchTrack(nextTrack.name);
+			} else {
+				console.log("No higher bitrate track available within the measured bandwidth.");
+			}
+			const nextBitrate = nextTrack.selectionParams.bitrate; // in Mbps
+			const probeSize = (nextBitrate ?? 0 - currentBitrate) * 1_000_000 / 8; // in bytes
+			this.#probeSize = probeSize; // Update probe size
+		}
+		
+	}
 
 	async #trackTask(track: Catalog.Track) {
 		if (!track.namespace) throw new Error("track has no namespace")
@@ -335,7 +357,7 @@ export default class Player extends EventTarget {
 			Make this a separate function and call it from the #runTrack function?.
 		
 		const subprobe = this.#connection.fetch(track.namespace, track.name)*/
-
+		console.log("TRYING TO SUBSCRIBE TO: ", track.name)
 		const sub = await this.#connection.subscribe(track.namespace, track.name)
 		try {
 			for (;;) {
@@ -358,6 +380,8 @@ export default class Player extends EventTarget {
 					super.dispatchEvent(new Event("loadeddata"))
 					eventOfFirstSegmentSent = true
 				}
+
+				console.log(`Data received for track: ${track.name}`); // Log incoming data
 
 				const [buffer, stream] = segment.stream.release()
 
@@ -388,6 +412,7 @@ export default class Player extends EventTarget {
 		const task = (async () => this.#trackTask(track))()
 
 		this.#trackTasks.set(track.name, task)
+		
 		
 		task.catch((err) => {
 			console.error(`Error to subscribe to track ${track.name}`, err)
@@ -443,19 +468,24 @@ export default class Player extends EventTarget {
 
 	async switchTrack(trackname: string) {
 		const currentTrack = this.getCurrentTrack()
+		this.subscribeFromTrackName(trackname)
+
 		if (this.#paused) {
 			this.#videoTrackName = trackname
 			return
 		}
 		if (currentTrack) {
 			console.log(`Unsubscribing from track: ${currentTrack.name} and Subscribing to track: ${trackname}`)
+			//const active_sub = this.#activeSubscriptions.get(currentTrack.name)
+			await new Promise((resolve) => setTimeout(resolve, 200)); // Add a small delay
 			await this.unsubscribeFromTrack(currentTrack.name)
+
+			//Hit kommer jag
 		} else {
 			console.log(`Subscribing to track: ${trackname}`)
 		}
 		this.#tracknum = this.#catalog.tracks.findIndex((track) => track.name === trackname)
 
-		this.subscribeFromTrackName(trackname)
 	}
 
 	async mute(isMuted: boolean) {
@@ -481,10 +511,11 @@ export default class Player extends EventTarget {
 			await task
 		}
 		super.dispatchEvent(new CustomEvent("unsubscribedone", { detail: { track: trackname } }))
+		console.log("DONE WITH UNSUBSCRIBE!")
 	}
 
 	subscribeFromTrackName(trackname: string) {
-		console.log(`Subscribing to track: ${trackname}`)
+		console.log(`Subscribing to new track: ${trackname}`)
 		const track = this.#tracksByName.get(trackname)
 		if (track) {
 			super.dispatchEvent(new CustomEvent("subscribestared", { detail: { track: trackname } }))
@@ -495,7 +526,10 @@ export default class Player extends EventTarget {
 		}
 	}
 
-	#onMessage(msg: Message.FromWorker) {
+	onMessage(msg: Message.FromWorker) {
+		if (msg.latency){
+			console.log("Latency: ", msg.latency)
+		}
 		if (msg.timeline) {
 			//this.#timeline.update(msg.timeline)
 		}
