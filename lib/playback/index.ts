@@ -37,10 +37,11 @@ export default class Player extends EventTarget {
 	#liveStartTime: number = Date.now()
 
 	//Latency settings
-	#latencyTimer: number = 10000
+	#latencyEnd: number = 12000
+	#latencyStart: number = 2000 //Start latency test after 2 seconds
 	#testLatency : boolean = true
 	#latencyDone: boolean = false
-	
+
 	//Probing settings
 	#useProbing: boolean = false
     #probeInterval: number = 10000 //How often probe is run
@@ -85,14 +86,12 @@ export default class Player extends EventTarget {
 		 if(this.#latencyDone == false && this.#testLatency == true){
 			this.addEventListener("latency", ((event: Event) => {
 				const customEvent = event as CustomEvent;
-				if(performance.now() < this.#latencyTimer && this.#latencyDone == false){
+				if(this.#latencyStart < performance.now() && performance.now() < this.#latencyEnd && this.#latencyDone == false){
 					this.#latencyTestResults.push(customEvent.detail);
-					console.log(this.#latencyTestResults)
-					
 				}
-				else if(performance.now() >= this.#latencyTimer && this.#latencyDone == false){
+				else if(performance.now() >= this.#latencyEnd && this.#latencyDone == false){
 					this.#latencyDone = true,
-					console.log(`Done with latency test after ${this.#latencyTimer/1000}s, download the results`)
+					console.log(`Done with latency test after ${this.#latencyEnd/1000}s, download the results`)
 					this.downloadLatencyStats()
 				}
 			}) as EventListener);
