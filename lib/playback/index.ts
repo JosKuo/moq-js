@@ -39,27 +39,25 @@ export default class Player extends EventTarget {
 	//Latency settings
 	#latencyEnd: number = 12000
 	#latencyStart: number = 2000 //Start latency test after 2 seconds
-	#testLatency : boolean = true
+	#testLatency : boolean = false //Change to true to measure latency
 	#latencyDone: boolean = false
+	#latencyTestResults: any[] = [] //Test result to download
 
 	//Probing settings
-	#useProbing: boolean = false
-    #probeInterval: number = 10000 //How often probe is run
-    #probeSize: number = 1250000
-    #probePriority: number = 254 
-    #probeTimer: number = 3000 //loop controller that triggers runProbe on a regular schedule
-    #probeTestResults: any[] = [] //Test result to download
-	#latencyTestResults: any[] = [] //Test result to download
-	#iterations_per_round = 5
+	#useProbing: boolean = true //Change to true to enable probing
+    #timeInterval: number = 1000 //How often runProbe() is called
+    #probeSize: number = 0 // Value to keep track of current probesize
+    #probePriority: number = 254 // Probe priority
+    #probeTimer: number = 0 // Timer to run probe, if equal to timeinterval, then it runs a new probe. 
+	#currentBitrateIndex = 0 //Index of the current bitrate at test
+	#latencyBenchmark: number = 0.7 //Latency benchmark
+	#testnumber: number = 3 //Couter to keep track of how many times we have tested the bitrate
+	#trackSize: number = 0 //Used to keep track of the previous size of the probe.
 
-	/*#useProbeTestData = true //Used for testing. 
-    #probeTestData = {
-        start:  1250000, //start probing at 10000 bytes
-        stop: 125000, //stop probing att 300000 bytes
-        increment: 0,
-        iteration: 3, //Try each probesize 3 times. 
-        lastIteration: 0 //Counter to track how many total probes have been run
-    }*/
+    #probeTestResults: any[] = [] //Test result to download
+	#roundMeasurements: any[] = [] //Collect the bitrate measurements used to calculate average bandwidth 
+	#latencyDuringProbe: any[] = [] //Save the latency during the probe
+	#latencyHistory: number[] = []
 
 	// Running is a promise that resolves when the player is closed.
 	// #close is called with no error, while #abort is called with an error.
@@ -67,14 +65,14 @@ export default class Player extends EventTarget {
 	#close!: () => void
 	#abort!: (err: Error) => void
 	#trackTasks: Map<string, Promise<void>> = new Map()
-	#bitrates: Map<Catalog.Track, number | undefined>
+	#bitrates: number[]
 
 	private constructor(connection: Connection, catalog: Catalog.Root, tracknum: number, canvas: OffscreenCanvas) {
 		super()
 		this.#connection = connection
 		this.#catalog = catalog
 		this.#tracksByName = new Map(catalog.tracks.map((track) => [track.name, track]))
-		this.#bitrates = new Map(catalog.tracks.map((track) => [track, track.selectionParams.bitrate]))
+		this.#bitrates = [4000000, 5000000, 6000000] //bps
 		this.#tracknum = tracknum
 		this.#audioTrackName = ""
 		this.#videoTrackName = ""
@@ -83,19 +81,25 @@ export default class Player extends EventTarget {
 		this.#backend = new Backend({ canvas, catalog }, this)
 		
 		 // Listen for latency events from the Backend
-		 if(this.#latencyDone == false && this.#testLatency == true){
-			this.addEventListener("latency", ((event: Event) => {
-				const customEvent = event as CustomEvent;
-				if(this.#latencyStart < performance.now() && performance.now() < this.#latencyEnd && this.#latencyDone == false){
-					this.#latencyTestResults.push(customEvent.detail);
-				}
-				else if(performance.now() >= this.#latencyEnd && this.#latencyDone == false){
-					this.#latencyDone = true,
-					console.log(`Done with latency test after ${this.#latencyEnd/1000}s, download the results`)
-					this.downloadLatencyStats()
-				}
-			}) as EventListener);
-	}
+
+		this.addEventListener("latency", ((event: Event) => {
+			const customEvent = event as CustomEvent;
+			
+			if(this.#testLatency && this.#latencyDone == false && this.#latencyStart < performance.now() && performance.now() < this.#latencyEnd){
+				this.#latencyTestResults.push(customEvent.detail);
+			}
+			else if(this.#testLatency == true && this.#latencyDone == false && performance.now() >= this.#latencyEnd){
+				this.#latencyDone = true,
+				console.log(`Done with latency test after ${this.#latencyEnd/1000}s, download the results`)
+				this.downloadLatencyStats()
+			}
+
+			if(this.#useProbing == true){
+				pushWithLimit(this.#latencyDuringProbe, customEvent.detail[1], 1000)
+			}
+			
+		}) as EventListener);
+	
 
 		super.dispatchEvent(new CustomEvent("catalogupdated", { detail: catalog }))
 		super.dispatchEvent(new CustomEvent("loadedmetadata", { detail: catalog }))
@@ -115,9 +119,8 @@ export default class Player extends EventTarget {
 			
 		})
 		
-		console.log("currentTrack: ", this.getCurrentTrack())
 		if(this.#useProbing == true){
-			this.parseProbeParametersAndRun()
+				this.initiateProbing()			
 		}
 
 	}
@@ -191,12 +194,9 @@ export default class Player extends EventTarget {
         return defaultValue
     }
 
-	parseProbeParametersAndRun() {
-
+	initiateProbing() {
 		clearInterval(this.#probeTimer)
-		this.#probeTimer = setInterval(this.runProbe, this.#probeInterval)
-		console.log("playback | parseProbeParameters | probeSize: %d probePriority: %d probeInterval: %d", this.#probeSize, this.#probePriority, this.#probeInterval)
-
+		this.#probeTimer = setInterval(this.runProbe, this.#timeInterval)
     }
 
 	downloadProbeStats = () => {
@@ -205,11 +205,11 @@ export default class Player extends EventTarget {
 
         // download logs
         if (this.#probeTestResults.length > 0) {
-            const headers = ["duration", "size", "bandwidth"]
+            const headers = ["duration", "totalBufferSize", "average_bw", "curr_bitrate", "switch_decision"]
             const csvContent = "data:application/vnd.ms-excel;charset=utf-8," + headers.join("\t") + "\n" + this.#probeTestResults.map((e) => Object.values(e).join("\t")).join("\n")
             const encodedUri = encodeURI(csvContent)
             link.setAttribute("href", encodedUri)
-            link.setAttribute("download", "logs_" + Date.now() + ".xls")
+            link.setAttribute("download", "probe_" + Date.now() + ".xlsx")
             link.click()
         } else {
             console.warn("playback | downloadProbeStats | no logs")
@@ -238,98 +238,132 @@ export default class Player extends EventTarget {
         link.remove()
     }
 	
-	runProbe = async () => { //?probeSize=40000&probePriority=0&probeInterval=3000
-		console.log("playback | runProbe")
-		
-		let bitrates : number[] = [4000000, 5000000, 6000000] //bps
-		let bw_results: number[] = []
-		/*if (this.#useProbeTestData && this.#probeTestData) {
-			console.log("using probe test data")
-			const totalProbeSizes = (this.#probeTestData.stop - this.#probeTestData.start) / this.#probeTestData.increment + 1
-			totalIteration = totalProbeSizes * this.#probeTestData.iteration
-			console.log("playback | probe | totalIteration", totalIteration)
-			this.#probeSize = this.#probeTestData.start + Math.floor(this.#probeTestData.lastIteration / this.#probeTestData.iteration) * this.#probeTestData.increment
-			++this.#probeTestData.lastIteration
-		}*/
-		for(this.#iterations_per_round; this.#iterations_per_round >0; --this.#iterations_per_round) {
-			let sub: any
-			try {
-				const start = performance.now()
-				const probeTrackName = ".probe:" + this.#probeSize*this.#probeTimer + ":" + this.#probePriority
-				sub = await this.#connection.subscribe(["bbb"], probeTrackName)
-		
-				console.log("playback | probe sub", sub, probeTrackName)
-				
-				const result = await Promise.race([
-					sub.data(),
-					new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for probe data")), 3000))
-				])
-			
-				let totalBufferSize = 0
-		
-				while (true) {
 
-					const chunk = await result.read()
-
-					if (!chunk) break
+	checkLatencyTrend = (latencies: number[], benchmark: number) => {
+		const windowSize = 100
+		if (latencies.length < windowSize) return false
+	
+		// Extract the last 100 samples
+		const window = latencies.slice(-windowSize)
 		
-					// Skip status messages
-					if (typeof chunk.payload === "number") continue
-					totalBufferSize += chunk.payload.byteLength
-				} 
-
-				const end = performance.now()
-				const duration = end - start
-				const measuredBandwidth = (totalBufferSize * 8) / (duration / 1000) //bps
-				
-				console.log("playback | probe done | duration:", duration, "bytes:", totalBufferSize, "bandwidth:", measuredBandwidth.toFixed(2), "tc_bw:")
-		
-				this.dispatchEvent(new CustomEvent("stat", {
-					detail: { type: "measuredBandwidth", value: measuredBandwidth }
-				}))
-				bw_results.push(measuredBandwidth)
-				this.#probeTestResults.push([duration, totalBufferSize, measuredBandwidth.toFixed(2)])
-		
-			} catch (e) {
-				console.error("playback | probe error", e)
-			} finally {
-				console.log("playback | probe closed")
-				if (sub) await sub.close()
-			}
-		
-			/*if (this.#useProbeTestData && this.#probeTestData.lastIteration === totalIteration) {
-				this.downloadProbeStats()
-				this.#probeTestData.lastIteration = 0
-				clearInterval(this.#probeTimer)
-			}*/
+		// Count how many times the latency increased compared to the previous sample
+		let increases = 0
+		for (let i = 1; i < window.length; i++) {
+			if (window[i] > window[i - 1]) increases++
 		}
-		const average_bw = bw_results.length > 0 
-			? bw_results.reduce((acc, e) => acc + e, 0) / bw_results.length 
-			: 0; // Default to 0 if no results
-
-		if (bw_results.length === 0) {
-			console.warn("playback | runProbe | No bandwidth measurements were collected.");
-		}
-
-		const currentTrack = this.getCurrentTrack();
-		console.log("playback | average_bw", average_bw);
 		
-		if (currentTrack && currentTrack.selectionParams?.bitrate) {
-			const currentBitrate = currentTrack.selectionParams.bitrate; // in Mbps
-			const nextTrack = this.#catalog.tracks
-				.filter((track) => track.selectionParams?.bitrate && track.selectionParams.bitrate > currentBitrate)
-				.sort((a, b) => (a.selectionParams.bitrate ?? 0) - (b.selectionParams.bitrate ?? 0))[0];
-			
-			
-			if (nextTrack) {
-				console.log(`Switching to higher bitrate track: ${nextTrack.name}`);
-				//this.switchTrack(nextTrack.name);
-			} else {
-				console.log("No higher bitrate track available within the measured bandwidth.");
+		// Increases more than "benchmark" ?
+		const ratio = increases / (windowSize - 1)
+		console.log(ratio > benchmark)
+		return ratio > benchmark
+	}
+
+	checkSpikes = (latencies: number[]) => {
+		/* This method checks if there are spikes based on mean + 2×std (95%)*/
+		const windowSize = 100
+		const window = latencies.slice(-windowSize)
+
+		if(latencies.length >= windowSize){
+			const threshhold = dynamixSpikeTreshold(window); 
+			if(Math.max(...window) > threshhold){
+				console.log("Spikes detected! ", Math.max(...window), " > ", threshhold)
+				return true
 			}
-			const nextBitrate = nextTrack.selectionParams.bitrate; // in Mbps
-			const probeSize = (nextBitrate ?? 0 - currentBitrate) * 1_000_000 / 8; // in bytes
-			this.#probeSize = probeSize; // Update probe size
+		}
+	}
+	
+	runProbe = async () => { 
+		let sub: any
+		let switch_decision: number
+		let curr_bitrate: number = this.#bitrates[this.#currentBitrateIndex] 
+		let next_bitrate: number;
+		if (this.#currentBitrateIndex + 1 < this.#bitrates.length) {
+			next_bitrate = this.#bitrates[this.#currentBitrateIndex + 1];
+		} else {
+			console.warn("Next bitrate index is out of bounds. Staying at current bitrate.");
+			next_bitrate = curr_bitrate; // Default to current bitrate if next is unavailable
+		}
+		// Check if we are using the highest bitrate
+		
+		try {
+			let curr_byte = curr_bitrate/8 //bits -> bytes
+			let next_byte = next_bitrate/8 //bits -> bytes
+			console.log("Current bitrate: ", curr_bitrate, "Next bitrate: ", next_bitrate)
+			console.log("tracksize: ", this.#trackSize)
+			this.#probeSize = ((this.#timeInterval/1000)*((next_byte-curr_byte) + this.#trackSize))  // t* (next - current), probea upp till nästa bitrate.
+			const start = performance.now()
+			const probeTrackName = ".probe:" + this.#probeSize + ":" + this.#probePriority 
+			sub = await this.#connection.subscribe(["bbb"], probeTrackName)
+			
+			console.log("playback | probe sub", sub, probeTrackName)
+			
+			const result = await Promise.race([
+				sub.data(),
+				new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout waiting for probe data")), 3000))
+			])
+		
+			let totalBufferSize = 0
+	
+			while (true) {
+				// Read and wait for the next chunk of data
+				const chunk = await result.read()
+				if (!chunk) break
+				if (typeof chunk.payload === "number") continue
+				totalBufferSize += chunk.payload.byteLength
+			} 
+
+			const end = performance.now()
+			const duration = end - start
+			const measuredBandwidth = (totalBufferSize * 8) / (duration / 1000) //bps	
+			this.#roundMeasurements.push(measuredBandwidth)
+
+			//const avgLatency = this.#latencyDuringProbe.reduce((acc, e) => acc + e, 0) / this.#latencyDuringProbe.length
+			//this.#latencyDuringProbe = [] 
+			//this.#latencyHistory.push(avgLatency)
+			
+			
+			/*If we have measured enough times, then we calculate the average bandwidth calculated */
+			if(this.#roundMeasurements.length == this.#testnumber){ 
+				let increasing_latency = this.checkLatencyTrend(this.#latencyDuringProbe, this.#latencyBenchmark)
+				let spikes = this.checkSpikes(this.#latencyDuringProbe)
+				const average_bw = this.#roundMeasurements.reduce((acc, e) => acc + e, 0) / this.#roundMeasurements.length
+				this.#roundMeasurements = [] 
+
+				// If the average bandwidth is greater than 80% of the current bitrate, switch up
+				if(average_bw*0.8 > curr_bitrate && this.#currentBitrateIndex < this.#bitrates.length-1){
+					this.#trackSize += ((this.#bitrates[this.#currentBitrateIndex + 1] - this.#bitrates[this.#currentBitrateIndex]) / 8)
+					this.#currentBitrateIndex = this.#currentBitrateIndex + 1
+					switch_decision = this.#bitrates[this.#currentBitrateIndex]
+					this.#latencyDuringProbe = [] //Empty the array
+					console.log("Probing for next level: ", this.#bitrates[this.#currentBitrateIndex])
+				}
+				else if(increasing_latency == true && this.#currentBitrateIndex > 0){
+					this.#trackSize -= ((this.#bitrates[this.#currentBitrateIndex] - this.#bitrates[this.#currentBitrateIndex-1]) / 8)
+					this.#currentBitrateIndex = this.#currentBitrateIndex - 1
+					switch_decision = this.#bitrates[this.#currentBitrateIndex]
+					console.log("Increasing latency:", this.#bitrates[this.#currentBitrateIndex])
+				}
+				/*else if(spikes == true && this.#currentBitrateIndex > 0){
+					this.#trackSize -= ((this.#bitrates[this.#currentBitrateIndex] - this.#bitrates[this.#currentBitrateIndex-1]) / 8)
+					this.#currentBitrateIndex = this.#currentBitrateIndex - 1
+					switch_decision = this.#bitrates[this.#currentBitrateIndex]
+					console.log("Spikes, switching down: ", this.#bitrates[this.#currentBitrateIndex])
+				}*/
+				// Else we are at a good level. 
+				// TODO: This might be a bit unstable...? Test this in lab. 
+				else{
+					switch_decision = curr_bitrate
+					console.log("Stay at the current level!", curr_bitrate)
+				}
+				this.#probeTestResults.push([duration, totalBufferSize, average_bw, curr_bitrate, switch_decision])
+			}
+	
+			
+		} catch (e) {
+			console.error("probe error", e)
+		} finally {
+			console.log("probe closed")
+			if (sub) await sub.close()
 		}
 		
 	}
@@ -379,8 +413,6 @@ export default class Player extends EventTarget {
 					super.dispatchEvent(new Event("loadeddata"))
 					eventOfFirstSegmentSent = true
 				}
-
-				console.log(`Data received for track: ${track.name}`); // Log incoming data
 
 				const [buffer, stream] = segment.stream.release()
 
@@ -621,4 +653,32 @@ export default class Player extends EventTarget {
 		}
 	}
 	*/
+}
+
+function pushWithLimit<T>(arr: T[], value: T, limit: number) {
+	/*Helper function to avoid memory consumption */
+	if (arr.length >= limit) {
+		arr.shift() // Remove the oldest element
+	}
+	arr.push(value) // Add the new element
+}
+
+function computeMean(latencies: number[]): number {
+	/*Helper function to calculate the mean of an array */
+	if (latencies.length === 0) return 0
+	const sum = latencies.reduce((acc, latency) => acc + latency, 0)
+	return sum / latencies.length
+}
+
+function computeStd(latencies: number[], mean: number): number {
+	/*Helper function to calculate the standard deviation of an array */
+	const variance = latencies.reduce((acc, val) => acc + (val - mean) ** 2, 0) / latencies.length
+	return Math.sqrt(variance)
+}
+
+function dynamixSpikeTreshold(latencies: number[], multiplier: number = 2): number {
+	/*Helper function to calculate the dynamic threshold */
+	const mean = computeMean(latencies)
+	const std = computeStd(latencies, mean)
+	return mean + multiplier * std
 }
