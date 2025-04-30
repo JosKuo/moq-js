@@ -90,6 +90,7 @@ export interface FromWorker {
 	// Sent back to the main thread regularly to update the UI
 	timeline?: Timeline
 	latency ?: [number, number]
+	iframe? : [number, number]
 }
 
 

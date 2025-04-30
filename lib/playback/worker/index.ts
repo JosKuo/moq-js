@@ -87,7 +87,12 @@ class Worker {
 
 		// Read each chunk, decoding the MP4 frames and adding them to the queue.
 		for (;;) {
+			let start = performance.now()
 			const chunk = await reader.read()
+			let end = performance.now()
+			if(chunk?.object == 2){
+				postMessage({"iframe": [chunk.object, chunk.payload, end-start]})
+			}
 			if (!chunk) {
 				break
 			}

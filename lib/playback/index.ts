@@ -44,10 +44,10 @@ export default class Player extends EventTarget {
 	#latencyTestResults: any[] = [] //Test result to download
 
 	//Probing settings
-	#useProbing: boolean = true //Change to true to enable probing
+	#useProbing: boolean = false //Change to true to enable probing
     #timeInterval: number = 1000 //How often runProbe() is called
     #probeSize: number = 0 // Value to keep track of current probesize
-    #probePriority: number = 254 // Probe priority
+    #probePriority: number = 1 // Probe priority
     #probeTimer: number = 0 // Timer to run probe, if equal to timeinterval, then it runs a new probe. 
 	#currentBitrateIndex = 0 //Index of the current bitrate at test
 	#latencyBenchmark: number = 0.7 //Latency benchmark
@@ -59,6 +59,10 @@ export default class Player extends EventTarget {
 	#latencyDuringProbe: any[] = [] //Save the latency during the probe
 	#latencyHistory: number[] = []
 
+	//iframe bw measurment settings
+	#duration: any[] = [] 
+	#useIframeEstimate: boolean = true //Change to true to enable iframe estimate
+	
 	// Running is a promise that resolves when the player is closed.
 	// #close is called with no error, while #abort is called with an error.
 	#running: Promise<void>
@@ -99,8 +103,15 @@ export default class Player extends EventTarget {
 			}
 			
 		}) as EventListener);
-	
-
+		
+		this.addEventListener("iframe", ((event: Event) => {
+			const customEvent = event as CustomEvent;
+			if(this.#useIframeEstimate == true){
+				console.log("Iframe estimate: ", customEvent.detail[0], customEvent.detail[1], customEvent.detail[2])
+				//this.#duration.pushWi(customEvent.detail[1], customEvent.detail[2])
+			}
+		}) as EventListener);
+		
 		super.dispatchEvent(new CustomEvent("catalogupdated", { detail: catalog }))
 		super.dispatchEvent(new CustomEvent("loadedmetadata", { detail: catalog }))
 
@@ -205,7 +216,7 @@ export default class Player extends EventTarget {
 
         // download logs
         if (this.#probeTestResults.length > 0) {
-            const headers = ["duration", "totalBufferSize", "average_bw", "curr_bitrate", "switch_decision"]
+            const headers = ["time", "duration", "totalBufferSize", "average_bw", "curr_bitrate", "switch_decision"]
             const csvContent = "data:application/vnd.ms-excel;charset=utf-8," + headers.join("\t") + "\n" + this.#probeTestResults.map((e) => Object.values(e).join("\t")).join("\n")
             const encodedUri = encodeURI(csvContent)
             link.setAttribute("href", encodedUri)
@@ -252,7 +263,7 @@ export default class Player extends EventTarget {
 			if (window[i] > window[i - 1]) increases++
 		}
 		
-		// Increases more than "benchmark" ?
+		// Increases more than "benchmark"% ?
 		const ratio = increases / (windowSize - 1)
 		console.log(ratio > benchmark)
 		return ratio > benchmark
@@ -271,6 +282,10 @@ export default class Player extends EventTarget {
 			}
 		}
 	}
+
+	downloadEstimate = () => {
+		
+	}
 	
 	runProbe = async () => { 
 		let sub: any
@@ -288,8 +303,6 @@ export default class Player extends EventTarget {
 		try {
 			let curr_byte = curr_bitrate/8 //bits -> bytes
 			let next_byte = next_bitrate/8 //bits -> bytes
-			console.log("Current bitrate: ", curr_bitrate, "Next bitrate: ", next_bitrate)
-			console.log("tracksize: ", this.#trackSize)
 			this.#probeSize = ((this.#timeInterval/1000)*((next_byte-curr_byte) + this.#trackSize))  // t* (next - current), probea upp till nästa bitrate.
 			const start = performance.now()
 			const probeTrackName = ".probe:" + this.#probeSize + ":" + this.#probePriority 
@@ -311,10 +324,10 @@ export default class Player extends EventTarget {
 				if (typeof chunk.payload === "number") continue
 				totalBufferSize += chunk.payload.byteLength
 			} 
-
 			const end = performance.now()
 			const duration = end - start
 			const measuredBandwidth = (totalBufferSize * 8) / (duration / 1000) //bps	
+			console.log(measuredBandwidth, "bps")
 			this.#roundMeasurements.push(measuredBandwidth)
 
 			//const avgLatency = this.#latencyDuringProbe.reduce((acc, e) => acc + e, 0) / this.#latencyDuringProbe.length
@@ -323,7 +336,7 @@ export default class Player extends EventTarget {
 			
 			
 			/*If we have measured enough times, then we calculate the average bandwidth calculated */
-			if(this.#roundMeasurements.length == this.#testnumber){ 
+			//if(this.#roundMeasurements.length == this.#testnumber){ 
 				let increasing_latency = this.checkLatencyTrend(this.#latencyDuringProbe, this.#latencyBenchmark)
 				let spikes = this.checkSpikes(this.#latencyDuringProbe)
 				const average_bw = this.#roundMeasurements.reduce((acc, e) => acc + e, 0) / this.#roundMeasurements.length
@@ -355,8 +368,8 @@ export default class Player extends EventTarget {
 					switch_decision = curr_bitrate
 					console.log("Stay at the current level!", curr_bitrate)
 				}
-				this.#probeTestResults.push([duration, totalBufferSize, average_bw, curr_bitrate, switch_decision])
-			}
+				this.#probeTestResults.push([performance.now, duration, totalBufferSize, average_bw, curr_bitrate, switch_decision])
+			//}
 	
 			
 		} catch (e) {
@@ -386,15 +399,16 @@ export default class Player extends EventTarget {
 
 		let eventOfFirstSegmentSent = false
 		
-		/*This is where the fetch happens atm. 
-			Make this a separate function and call it from the #runTrack function?.
-		
-		const subprobe = this.#connection.fetch(track.namespace, track.name)*/
 		console.log("TRYING TO SUBSCRIBE TO: ", track.name)
 		const sub = await this.#connection.subscribe(track.namespace, track.name)
 		try {
 			for (;;) {
+				let start = performance.now()
 				const segment = await Promise.race([sub.data(), this.#running])
+
+				let end = performance.now()
+
+				console.log("Time to get segment: ", end - start)
 				if (!segment) continue
 
 				if (!(segment instanceof SubgroupReader)) {

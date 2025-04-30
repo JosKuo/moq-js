@@ -124,6 +124,14 @@ export default class Backend {
 				}),
 			)
 		}
+		if(msg.iframe){
+			this.#eventTarget.dispatchEvent(
+				new CustomEvent("iframe", {
+					detail: msg.iframe,
+				}),		
+			)
+		}
+		
 	}
 }
 
