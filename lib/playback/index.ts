@@ -60,8 +60,9 @@ export default class Player extends EventTarget {
 	#latencyHistory: number[] = []
 
 	//iframe bw measurment settings
-	#duration: any[] = [] 
+	#duration: any[] = []
 	#useIframeEstimate: boolean = true //Change to true to enable iframe estimate
+	#currentIframeEstimate: number = 0 //Current iframe estimate
 	
 	// Running is a promise that resolves when the player is closed.
 	// #close is called with no error, while #abort is called with an error.
@@ -105,12 +106,25 @@ export default class Player extends EventTarget {
 		}) as EventListener);
 		
 		this.addEventListener("iframe", ((event: Event) => {
-			const customEvent = event as CustomEvent;
-			if(this.#useIframeEstimate == true){
-				console.log("Iframe estimate: ", customEvent.detail[0], customEvent.detail[1], customEvent.detail[2])
-				//this.#duration.pushWi(customEvent.detail[1], customEvent.detail[2])
-			}
-		}) as EventListener);
+			const customEvent = event as CustomEvent
+			if (this.#useIframeEstimate == true) {
+				
+				const size = customEvent.detail[1].length
+				const duration = customEvent.detail[2]
+				this.#currentIframeEstimate = (size * 8) / (duration / 1000) //bits
+				const bw_est = this.#currentIframeEstimate
+				
+				if (this.#useIframeEstimate == true) {
+
+					this.run_iframe_estimate(bw_est, duration, size)
+						if (performance.now() > 60000) {
+							this.downloadProbeStats()
+							this.#useIframeEstimate = false
+						}
+					}
+				}
+			}) as EventListener)
+			
 		
 		super.dispatchEvent(new CustomEvent("catalogupdated", { detail: catalog }))
 		super.dispatchEvent(new CustomEvent("loadedmetadata", { detail: catalog }))
@@ -220,7 +234,7 @@ export default class Player extends EventTarget {
             const csvContent = "data:application/vnd.ms-excel;charset=utf-8," + headers.join("\t") + "\n" + this.#probeTestResults.map((e) => Object.values(e).join("\t")).join("\n")
             const encodedUri = encodeURI(csvContent)
             link.setAttribute("href", encodedUri)
-            link.setAttribute("download", "probe_" + Date.now() + ".xlsx")
+            link.setAttribute("download", "probe_" + Date.now() + ".xls")
             link.click()
         } else {
             console.warn("playback | downloadProbeStats | no logs")
@@ -283,8 +297,49 @@ export default class Player extends EventTarget {
 		}
 	}
 
-	downloadEstimate = () => {
+	run_iframe_estimate= (bw_est: number, duration: number, size: number) => {
+		let switch_decision: number
+		let next_bitrate: number
+		const curr_bitrate: number = this.#bitrates[this.#currentBitrateIndex]
+	
+		if (this.#currentBitrateIndex + 1 < this.#bitrates.length) {
+			next_bitrate = this.#bitrates[this.#currentBitrateIndex++]
+		} else {
+			console.warn("Next bitrate index is out of bounds. Staying at current bitrate.")
+			next_bitrate = curr_bitrate // Default to current bitrate if next is unavailable
+		}
 		
+		// If the average bandwidth is greater than 80% of the current bitrate, switch up
+		if (bw_est * 0.8 > curr_bitrate && this.#currentBitrateIndex < this.#bitrates.length - 1) {
+			this.#trackSize += (this.#bitrates[this.#currentBitrateIndex++] -
+				this.#bitrates[this.#currentBitrateIndex]) / 8
+			
+			this.#currentBitrateIndex++
+
+			switch_decision = this.#bitrates[this.#currentBitrateIndex]
+			console.log("Switching up to: ", this.#bitrates[this.#currentBitrateIndex])
+
+		} else if (bw_est <= curr_bitrate && this.#currentBitrateIndex > 0) {
+			this.#trackSize -= (this.#bitrates[this.#currentBitrateIndex] - 
+				this.#bitrates[this.#currentBitrateIndex--]) / 8
+
+			this.#currentBitrateIndex--
+
+			switch_decision = this.#bitrates[this.#currentBitrateIndex]
+			console.log("Switching down to:", this.#bitrates[this.#currentBitrateIndex])
+
+		} else {
+			switch_decision = curr_bitrate
+			console.log("Stay at the current level!", curr_bitrate)
+		}
+		this.#probeTestResults.push([
+			performance.now(),
+			duration,
+			size,
+			bw_est,
+			curr_bitrate,
+			switch_decision,
+		])
 	}
 	
 	runProbe = async () => { 
@@ -403,12 +458,8 @@ export default class Player extends EventTarget {
 		const sub = await this.#connection.subscribe(track.namespace, track.name)
 		try {
 			for (;;) {
-				let start = performance.now()
 				const segment = await Promise.race([sub.data(), this.#running])
 
-				let end = performance.now()
-
-				console.log("Time to get segment: ", end - start)
 				if (!segment) continue
 
 				if (!(segment instanceof SubgroupReader)) {
